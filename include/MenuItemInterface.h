@@ -4,6 +4,13 @@
 #include "core/display.h"
 #include <globals.h>
 
+#if defined(UI_COMPACT) && UI_COMPACT
+#include "core/menu_items/compact_icons.h"
+class MenuItemInterface;
+// Draws the top-level icon grid with `hovered` focused. Defined in main_menu.cpp.
+void drawCompactMainGrid(MenuItemInterface *hovered);
+#endif
+
 // Pixel span a menu icon covers when drawn at scale 1. Lower it to render the icons
 // bigger inside the same box, raise it if the widest ones start touching their label.
 #define ICON_SCALE_REFERENCE 80.0f
@@ -30,7 +37,21 @@ public:
     bool checkTheme() { return hasTheme() && themePath().length() > 0; }
     String getName() const { return String(_name); }
 
+#if defined(UI_COMPACT) && UI_COMPACT
+    // One cell of the main menu icon grid. The icon follows the class, not its (renamable) name.
+    void drawGridIcon(int centerX, int centerY) {
+        drawCompactMenuIcon(
+            compactIcon(), centerX, centerY, bruceConfig.priColor, bruceConfig.bgColor, ICON_GRID_ICON_SIZE
+        );
+    }
+#endif
+
     void draw(float scale = 1) {
+#if defined(UI_COMPACT) && UI_COMPACT
+        (void)scale;
+        drawCompactMainGrid(this);
+        return;
+#endif
         if (rotation != bruceConfigPins.rotation) resetCoordinates();
         if (!checkTheme()) {
             tft.fillRect(0, 27, tftWidth, tftHeight - 27, bruceConfig.bgColor);
@@ -161,6 +182,11 @@ protected:
 
     int arrowAreaX = BORDER_PAD_X;
     int arrowAreaW = iconAreaX - arrowAreaX;
+
+#if defined(UI_COMPACT) && UI_COMPACT
+    // The compact icon shown in the main menu grid; overridden per menu. Default is a generic tool.
+    virtual CompactMenuIcon compactIcon() const { return CompactMenuIcon::Tools; }
+#endif
 
     MenuItemInterface(const char *name) : _name(name) {}
 

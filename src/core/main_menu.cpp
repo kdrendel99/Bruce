@@ -74,10 +74,23 @@ void MainMenu::begin(void) {
         };
     }
 
+#if defined(UI_COMPACT) && UI_COMPACT
+    // Compact main menu is a 4x2 icon grid; the item's draw() routes to drawCompactMainGrid().
+    renderItem = [](void *menuItem, bool shouldRender) {
+        if (!shouldRender) return false;
+        static_cast<MenuItemInterface *>(menuItem)->draw();
+        return true;
+    };
+    _visibleItems.clear();
+#endif
+
     std::vector<String> l = bruceConfig.disabledMenus;
     for (int i = 0; i < _totalItems; i++) {
         String itemName = _menuItems[i]->getName();
         if (find(l.begin(), l.end(), itemName) == l.end()) { // If menu item is not disabled
+#if defined(UI_COMPACT) && UI_COMPACT
+            _visibleItems.push_back(_menuItems[i]);
+#endif
             options.push_back(
                 {// selected lambda
                  itemName,
@@ -104,6 +117,35 @@ void MainMenu::begin(void) {
 
     _currentIndex = loopOptions(options, MENU_TYPE_MAIN, "Main Menu", _currentIndex);
 };
+
+#if defined(UI_COMPACT) && UI_COMPACT
+/*********************************************************************
+**  Function: drawCompactGrid
+**  Main menu as a 4 x 2 icon grid (paged for >8 menus)
+**********************************************************************/
+void MainMenu::drawCompactGrid(MenuItemInterface *hovered) {
+    int index = 0;
+    for (size_t i = 0; i < _visibleItems.size(); ++i) {
+        if (_visibleItems[i] == hovered) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    drawIconGrid(
+        index,
+        static_cast<int>(_visibleItems.size()),
+        hovered ? hovered->getName() : String(""),
+        &MainMenu::drawCompactGridCell
+    );
+}
+
+void MainMenu::drawCompactGridCell(int item, int centerX, int centerY) {
+    if (item < 0 || item >= static_cast<int>(mainMenu._visibleItems.size())) return;
+    mainMenu._visibleItems[item]->drawGridIcon(centerX, centerY);
+}
+
+void drawCompactMainGrid(MenuItemInterface *hovered) { mainMenu.drawCompactGrid(hovered); }
+#endif
 
 /*********************************************************************
 **  Function: gridIndexOf

@@ -11,6 +11,44 @@
 
 #define MAX_MENU_SIZE (int)(tftHeight / 25)
 
+#if UI_COMPACT
+// ── 128x64 compact UI (ported from BruceButBetter) ───────────────────────────
+// Renders the full Bruce menu on a 128x64 mono OLED: 4-row lists, compact status
+// bar + footer, and (for the main menu) a 4x2 icon grid. All gated on UI_COMPACT
+// so mainline's default (color-TFT) layout is untouched when the flag is off.
+#undef MAX_MENU_SIZE
+#define MENU_ROW_H (FM * LH + 2)
+#define MAX_MENU_SIZE (int)((tftHeight - STATUS_BAR_HEIGHT - 7) / MENU_ROW_H)
+#define CMENU_X 2
+#define CMENU_W (tftWidth - 6)
+#define CMENU_Y STATUS_BAR_HEIGHT
+#define CMENU_H(rows) (MENU_ROW_H * (rows))
+#define FOOTER_LINE_Y (tftHeight - 10)
+#define FOOTER_TEXT_Y (tftHeight - 8)
+static Opt_Coord drawCompactList(
+    int index, std::vector<Option> &options, const char *hint = nullptr, const char *shortHint = nullptr
+);
+static void drawStatusBarCompact(const char *leftText);
+static void drawCompactFooter(const char *hint, const char *shortHint, int position, int total);
+static volatile bool compactMenuRedrawRequested = false;
+void requestCompactMenuRedraw() { compactMenuRedrawRequested = true; }
+static String compactTitle;
+void setCompactScreenTitle(const String &title) { compactTitle = title; }
+static int iconGridLabelChars = 0;
+// Batch a whole compact frame into one bus transaction / coherent panel flush, matching bbb.
+// The lovyan backend exposes public startWrite/endWrite passthroughs for this.
+static inline void compactFrameBegin() {
+#if defined(USE_LOVYANGFX)
+    tft.startWrite();
+#endif
+}
+static inline void compactFrameEnd() {
+#if defined(USE_LOVYANGFX)
+    tft.endWrite();
+#endif
+}
+#endif // UI_COMPACT
+
 uint8_t mainMenuGridColumns = 0;
 bool (*gridPageTapHandler)(int x, int y, int currentIndex, int &newIndex) = nullptr;
 
@@ -43,6 +81,39 @@ bool __attribute__((weak)) isCharging() { return hal_gauge_is_charging(); }
 ** Description:   Scroll large texts into screen
 ***************************************************************************************/
 void displayScrollingText(const String &text, Opt_Coord &coord, bool highlight) {
+#if UI_COMPACT
+    // Compact lists encode focus/highlight in coord's fg/bg; scroll the focused label in place.
+    (void)highlight;
+    if (coord.size <= 0) return;
+    static String lastText;
+    static int lastX = -1;
+    static int lastY = -1;
+    static int offset = 0;
+    static uint32_t nextFrame = 0;
+    const uint32_t now = millis();
+    if (lastText != text || lastX != coord.x || lastY != coord.y) {
+        lastText = text;
+        lastX = coord.x;
+        lastY = coord.y;
+        offset = 0;
+        nextFrame = now + 350;
+        return;
+    }
+    if (static_cast<int>(text.length()) <= coord.size) return;
+    if (static_cast<int32_t>(now - nextFrame) < 0) return;
+    const String cycle = text + "   ";
+    offset = (offset + 1) % cycle.length();
+    String window;
+    window.reserve(coord.size);
+    for (int i = 0; i < coord.size; ++i) window += cycle[(offset + i) % cycle.length()];
+    tft.fillRect(coord.x, coord.y, coord.size * LW, LH, coord.bgcolor);
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(coord.fgcolor, coord.bgcolor);
+    tft.drawString(window, coord.x, coord.y, 1);
+    nextFrame = now + (offset == 0 ? 600 : 150);
+    return;
+#endif
     int len = text.length();
     String displayText = text + "        "; // Add spaces for smooth looping
     int scrollLen = len + 8;                // Full text plus space buffer
@@ -584,6 +655,11 @@ int loopOptions(
     }
 
     Opt_Coord coord;
+#if UI_COMPACT
+    // True when the compact list/grid drew this frame (so its label may scroll); false when a
+    // menu item's own hover lambda painted a custom screen (then nothing should scroll over it).
+    bool compactUsesList = false;
+#endif
     bool redraw = true;
     bool exit = false;
     int menuSize = options.size();
@@ -612,6 +688,13 @@ int loopOptions(
     }
     if (index >= options.size()) index = 0;
     bool firstRender = true;
+#if UI_COMPACT
+    // A category keeps its name in the status bar on every screen below it; the main menu shows the
+    // clock. The parent's title is restored when this menu returns.
+    const String parentTitle = compactTitle;
+    if (menuType == MENU_TYPE_MAIN) compactTitle = "";
+    else if (menuType == MENU_TYPE_SUBMENU && subText && subText[0]) compactTitle = subText;
+#endif
     unsigned long menuOpenTs =
         0; // timestamp when this menu was first rendered (per-invocation, not shared across nested menus)
 #if defined(HAS_TOUCH)
@@ -648,6 +731,17 @@ int loopOptions(
             if (options[index].hover)
                 renderedByLambda = options[index].hover(options[index].hoverPointer, true);
 
+#if UI_COMPACT
+            compactUsesList = !renderedByLambda;
+            if (menuType == MENU_TYPE_MAIN && renderedByLambda) {
+                // The icon grid footer holds the focused name; it scrolls like a list label.
+                coord.x = 2;
+                coord.y = FOOTER_TEXT_Y;
+                coord.size = iconGridLabelChars;
+                coord.fgcolor = bruceConfig.priColor;
+                coord.bgcolor = bruceConfig.bgColor;
+            }
+#endif
             if (!renderedByLambda) {
                 if (menuType == MENU_TYPE_SUBMENU) drawSubmenu(index, options, subText);
                 else
@@ -754,10 +848,21 @@ int loopOptions(
             }
         }
 
+#if UI_COMPACT
+        // Match bbb: only scroll the list label when the compact list drew it; on the main menu the
+        // grid footer label scrolls instead. A custom hover-lambda screen gets no scrolling overlay.
+        if (compactUsesList && (menuType == MENU_TYPE_REGULAR || menuType == MENU_TYPE_SUBMENU)) {
+            String txt = options[index].label;
+            displayScrollingText(txt, coord, true);
+        } else if (menuType == MENU_TYPE_MAIN && !compactUsesList) {
+            displayScrollingText(options[index].label, coord, true);
+        }
+#else
         if (menuType == MENU_TYPE_REGULAR) {
             String txt = options[index].label;
             displayScrollingText(txt, coord, true);
         }
+#endif
 #ifdef HAS_3_BUTTONS
         if (EscPress && PrevPress) EscPress = false;
 #endif
@@ -790,6 +895,38 @@ int loopOptions(
             }
         }
 
+#if UI_COMPACT
+        // Main menu icon grid: LEFT/RIGHT step through the cells in reading order,
+        // UP/DOWN change row and turn the page at the top/bottom edge.
+        const bool gridNavigation = menuType == MENU_TYPE_MAIN;
+        if (gridNavigation) {
+            int dx = 0;
+            int dy = 0;
+#if defined(NO_LR_BUTTONS)
+            // 4-button (or single-button) layout: LEFT/RIGHT are not wired, so UP/DOWN walk the grid.
+            if (check(UpPress)) dx = -1;
+            else if (check(DownPress)) dx = 1;
+#else
+            if (check(PrevPress)) dx = -1;
+            else if (check(NextPress)) dx = 1;
+            else if (check(UpPress)) dy = -1;
+            else if (check(DownPress)) dy = 1;
+#endif
+            if (dx || dy) {
+                const int target = iconGridMove(index, static_cast<int>(options.size()), dx, dy);
+                if (dx > 0 || dy > 0) {
+                    if (!bruceConfig.devMode && target <= index) devModeCounter++;
+                } else {
+                    devModeCounter = 0;
+                }
+                index = target;
+                redraw = true;
+            }
+        }
+#else
+        const bool gridNavigation = false;
+#endif
+
 #ifdef HAS_ENCODER
         int32_t rotarySteps = drainRotarySteps();
         if (rotarySteps != 0) {
@@ -821,7 +958,7 @@ int loopOptions(
         } else
 #endif
         {
-            if (PrevPress || check(UpPress)) {
+            if (!gridNavigation && (PrevPress || check(UpPress))) {
                 devModeCounter = 0;
 #ifdef HAS_KEYBOARD
                 check(PrevPress);
@@ -863,7 +1000,7 @@ int loopOptions(
 #endif
             }
             /* DW Btn to next item */
-            if (check(NextPress) || check(DownPress)) {
+            if (!gridNavigation && (check(NextPress) || check(DownPress))) {
                 int nextEnabled = findNextEnabled(index, +1);
                 if (nextEnabled >= 0) {
                     if (!bruceConfig.devMode && nextEnabled <= index) devModeCounter++;
@@ -900,6 +1037,9 @@ int loopOptions(
 
     RotaryNetSteps = 0; // reset rotary steps to avoid unexpected jumps in the next menu
     touchZoneOutsideFooterEnabled = prevTouchZoneOutsideFooterEnabled;
+#if UI_COMPACT
+    compactTitle = parentTitle;
+#endif
     return index;
 }
 
@@ -909,6 +1049,29 @@ int loopOptions(
 ** Dependencia: prog_handler =>>    0 - Flash, 1 - LittleFS
 ***************************************************************************************/
 void progressHandler(int progress, size_t total, const String &message) {
+#if UI_COMPACT
+    {
+        const int barX = 4;
+        const int barY = tftHeight - 19;
+        const int barW = tftWidth - 8;
+        const int barH = 9;
+        uint64_t done = progress > 0 ? static_cast<uint64_t>(progress) : 0;
+        if (done > total) done = total;
+        const int percent = total ? static_cast<int>(done * 100 / total) : 0;
+        compactFrameBegin();
+        tft.fillRect(0, STATUS_BAR_HEIGHT, tftWidth, tftHeight - STATUS_BAR_HEIGHT, bruceConfig.bgColor);
+        tft.setTextSize(1);
+        tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
+        tft.drawCentreString(
+            message.substring(0, (tftWidth - 8) / LW), tftWidth / 2, STATUS_BAR_HEIGHT + 5, 1
+        );
+        tft.drawCentreString(String(percent) + "%", tftWidth / 2, barY - 12, 1);
+        tft.drawRect(barX, barY, barW, barH, bruceConfig.priColor);
+        tft.fillRect(barX + 2, barY + 2, (barW - 4) * percent / 100, barH - 4, bruceConfig.priColor);
+        compactFrameEnd();
+    }
+    return;
+#endif
     int barHeight = LH * FP + 5;
     int barY = tftHeight - barHeight - BORDER_PAD_Y;
     int barWidth = map(progress, 0, total, 0, tftWidth - 4 * BORDER_PAD_X);
@@ -940,6 +1103,16 @@ Opt_Coord drawOptions(
     static int last_init = -1;
 
     Opt_Coord coord;
+
+#if UI_COMPACT
+    (void)fgcolor;
+    (void)selcolor;
+    (void)bgcolor;
+    (void)firstRender;
+    (void)border;
+    (void)compact;
+    return drawCompactList(index, options);
+#endif
 
     int rowHeightPx = FM * LH + 4;
     int32_t margin = 10; // matches Launcher's tftHeight-20 (10px top+bottom) for both border states
@@ -1145,11 +1318,267 @@ Opt_Coord drawOptions(
     return coord;
 }
 
+#if UI_COMPACT
+// ── 128x64 compact UI helper bodies (ported from BruceButBetter) ──────────────
+// Status bar flags: one fixed slot each, so a flag never moves when another appears or goes.
+#define STATUS_SLOT_W 7
+#define STATUS_RIGHT_CHARS 4 // room for "100%" at the right edge
+
+// A full-width, single-line header leaves four readable rows on a 128x64 OLED.
+// Left: screen title, or the clock / "BRUCE" on the main menu. Right: flag slots, battery or USB.
+static void drawStatusBarCompact(const char *leftText) {
+    const uint16_t fg = bruceConfig.priColor;
+    const uint16_t bg = bruceConfig.bgColor;
+    tft.fillRect(0, 0, tftWidth, STATUS_BAR_HEIGHT, bg);
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(fg, bg);
+
+    // No battery reading on boards without one (getBattery() == 0): show USB power instead.
+    const uint8_t battery = getBattery();
+    tft.drawRightString(battery > 0 ? String(battery) + "%" : String("USB"), tftWidth - 2, 1, 1);
+
+    struct StatusFlag {
+        char symbol;
+        bool on;
+    };
+    StatusFlag flags[6];
+    int slotCount = 0;
+    auto addFlag = [&](char symbol, bool on) { flags[slotCount++] = StatusFlag{symbol, on}; };
+    addFlag('S', sdcardMounted);
+    addFlag('W', WiFi.getMode() != WIFI_MODE_NULL);
+    addFlag('@', isWebUIActive);
+    addFlag('B', BLEConnected);
+#ifndef DISABLE_GPS
+    addFlag('G', gpsConnected); // no G slot on builds without GPS
+#endif
+    addFlag('V', isConnectedWireguard);
+    const int slotsEnd = tftWidth - 2 - STATUS_RIGHT_CHARS * LW - 3;
+    const int slotsX = slotsEnd - slotCount * STATUS_SLOT_W;
+    int leftEnd = slotsEnd; // the title may use the space up to the first flag that is shown
+    for (int i = 0; i < slotCount; ++i) {
+        if (!flags[i].on) continue;
+        const int x = slotsX + i * STATUS_SLOT_W;
+        if (x < leftEnd) leftEnd = x;
+        tft.drawString(String(flags[i].symbol), x, 1, 1);
+    }
+
+    String left;
+    if (leftText && leftText[0]) left = leftText;
+    else if (clock_set) {
+#if defined(HAS_RTC)
+        updateTimeStr(_rtc.getTimeStruct());
+#else
+        updateTimeStr(rtc.getTimeStruct());
+#endif
+        left = String(timeStr).substring(0, 5);
+    } else left = "BRUCE";
+
+    int availableChars = (leftEnd - 3 - 2) / LW;
+    if (availableChars < 0) availableChars = 0;
+    tft.drawString(left.substring(0, availableChars), 2, 1, 1);
+    tft.drawFastHLine(0, STATUS_BAR_HEIGHT - 3, tftWidth, fg);
+}
+
+// Bottom strip shared by the lists: divider, button hint on the left, position on the right.
+// The long hint is replaced by the short one when it would run into the counter.
+static void drawCompactFooter(const char *hint, const char *shortHint, int position, int total) {
+    const uint16_t fg = bruceConfig.priColor;
+    const uint16_t bg = bruceConfig.bgColor;
+    tft.drawFastHLine(0, FOOTER_LINE_Y, tftWidth, fg);
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(fg, bg);
+    const String counter = String(position) + "/" + String(total);
+    tft.drawRightString(counter, tftWidth - 2, FOOTER_TEXT_Y, 1);
+    int room = (tftWidth - 2 - static_cast<int>(counter.length()) * LW - LW - 2) / LW;
+    if (room < 0) room = 0;
+    String text = hint ? hint : "";
+    if (static_cast<int>(text.length()) > room && shortHint) text = shortHint;
+    if (static_cast<int>(text.length()) > room) text = text.substring(0, room);
+    tft.drawString(text, 2, FOOTER_TEXT_Y, 1);
+}
+
+// Shared rendering keeps context menus, submenus, scrolling labels and check marks aligned.
+// `hint`/`shortHint` label the OK/BACK buttons in the footer; nullptr picks one from the options.
+static Opt_Coord drawCompactList(
+    int index, std::vector<Option> &options, const char *hint, const char *shortHint
+) {
+    Opt_Coord coord;
+    const int total = static_cast<int>(options.size());
+    const uint16_t fg = bruceConfig.priColor;
+    const uint16_t bg = bruceConfig.bgColor;
+    compactFrameBegin();
+    tft.fillRect(0, CMENU_Y, tftWidth, tftHeight - CMENU_Y, bg);
+    if (total == 0) {
+        compactFrameEnd();
+        return coord;
+    }
+    const int visible = total < MAX_MENU_SIZE ? total : MAX_MENU_SIZE;
+    int first = index - visible / 2;
+    if (first < 0) first = 0;
+    if (first + visible > total) first = total - visible;
+    const int labelX = CMENU_X + 9; // tighter marker gap -> a couple more chars of label width
+    const int maxChars = (CMENU_W - 12) / LW;
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    for (int row = 0; row < visible; ++row) {
+        const int item = first + row;
+        const int rowY = CMENU_Y + row * MENU_ROW_H;
+        const bool focused = item == index;
+        if (focused) tft.fillRoundRect(CMENU_X, rowY, CMENU_W, MENU_ROW_H, 2, fg);
+        const uint16_t textColor = focused ? bg : fg;
+        const uint16_t textBg = focused ? fg : bg;
+        tft.setTextColor(textColor, textBg);
+        const char *marker = options[item].selected ? "*" : (options[item].enabled ? "" : "-");
+        tft.drawString(marker, CMENU_X + 3, rowY + 1, 1);
+        tft.drawString(String(options[item].label).substring(0, maxChars), labelX, rowY + 1, 1);
+        if (focused) {
+            coord.x = labelX;
+            coord.y = rowY + 1;
+            coord.size = maxChars;
+            coord.fgcolor = textColor;
+            coord.bgcolor = textBg;
+        }
+    }
+    if (total > visible) {
+        const int trackH = MENU_ROW_H * visible - 2;
+        int thumbH = trackH * visible / total;
+        if (thumbH < 3) thumbH = 3;
+        const int thumbY = CMENU_Y + first * (trackH - thumbH) / (total - visible);
+        tft.drawFastVLine(tftWidth - 2, CMENU_Y, trackH, fg);
+        tft.fillRect(tftWidth - 3, thumbY, 3, thumbH, fg);
+    }
+    if (!hint) {
+        // A list that marks its current choice with "*" is a setting: OK changes it.
+        bool choiceList = false;
+        for (const auto &option : options) {
+            if (option.selected) {
+                choiceList = true;
+                break;
+            }
+        }
+        hint = choiceList ? "OK:Change BACK:Back" : "OK:Select BACK:Back";
+        shortHint = choiceList ? "OK:Change" : "OK:Select";
+    }
+    drawCompactFooter(hint, shortHint, index + 1, total);
+    compactFrameEnd();
+    return coord;
+}
+
+static void drawSubmenuCompact(int index, std::vector<Option> &options, const char *title) {
+    compactFrameBegin();
+    drawStatusBarCompact(title);
+    drawCompactList(index, options);
+    compactFrameEnd();
+}
+
+/***************************************************************************************
+** Icon grid (main menu)
+** 4 columns of 32 px, two rows 20 px apart under the status bar. The focused cell gets a
+** rounded 1 px frame; the bottom strip shows its name, page dots and the position.
+***************************************************************************************/
+#define GRID_CELL_W (tftWidth / ICON_GRID_COLS)
+// Icon centre of the first row (y=24): its frame starts at y=14, below the area that the
+// status bar clears (y=0..13) when it refreshes on its own every 30 s.
+#define GRID_ROW0_Y (STATUS_BAR_HEIGHT + 10)
+#define GRID_ROW_PITCH 20
+#define GRID_FRAME_W 26
+#define GRID_FRAME_H 20
+#define GRID_DOT 4      // page dot size: filled = current page, outline = other pages
+#define GRID_DOT_GAP 2
+
+static int iconGridX(int slot) { return GRID_CELL_W * (slot % ICON_GRID_COLS) + GRID_CELL_W / 2; }
+static int iconGridY(int slot) { return GRID_ROW0_Y + (slot / ICON_GRID_COLS) * GRID_ROW_PITCH; }
+
+int iconGridMove(int index, int total, int dx, int dy) {
+    if (total <= 0) return 0;
+    if (index < 0 || index >= total) index = 0;
+    if (dx) return ((index + dx) % total + total) % total; // LEFT/RIGHT wrap row, page and list
+    if (!dy) return index;
+    const int pages = (total + ICON_GRID_PAGE - 1) / ICON_GRID_PAGE;
+    int page = index / ICON_GRID_PAGE;
+    int row = (index % ICON_GRID_PAGE) / ICON_GRID_COLS;
+    const int col = index % ICON_GRID_COLS;
+    if (dy > 0) {
+        // Next row on this page if it has cells, otherwise the first row of the next page.
+        if (row + 1 < ICON_GRID_ROWS && page * ICON_GRID_PAGE + (row + 1) * ICON_GRID_COLS < total) ++row;
+        else {
+            page = (page + 1) % pages;
+            row = 0;
+        }
+    } else {
+        // Previous row on this page, otherwise the last filled row of the previous page.
+        if (row > 0) --row;
+        else {
+            page = (page - 1 + pages) % pages;
+            row = ICON_GRID_ROWS - 1;
+            while (row > 0 && page * ICON_GRID_PAGE + row * ICON_GRID_COLS >= total) --row;
+        }
+    }
+    int target = page * ICON_GRID_PAGE + row * ICON_GRID_COLS + col;
+    if (target >= total) target = total - 1; // short last row: nearest cell to the left
+    return target;
+}
+
+void drawIconGrid(int index, int total, const String &label, IconGridCellFn drawCell) {
+    iconGridLabelChars = 0;
+    if (total <= 0 || !drawCell) return;
+    if (index < 0 || index >= total) index = 0;
+    const uint16_t fg = bruceConfig.priColor;
+    const uint16_t bg = bruceConfig.bgColor;
+    const int page = index / ICON_GRID_PAGE;
+    const int pages = (total + ICON_GRID_PAGE - 1) / ICON_GRID_PAGE;
+    const int first = page * ICON_GRID_PAGE;
+    const int count = total - first < ICON_GRID_PAGE ? total - first : ICON_GRID_PAGE;
+
+    compactFrameBegin();
+    drawStatusBarCompact(nullptr);
+    tft.fillRect(0, STATUS_BAR_HEIGHT, tftWidth, tftHeight - STATUS_BAR_HEIGHT, bg);
+    for (int slot = 0; slot < count; ++slot) drawCell(first + slot, iconGridX(slot), iconGridY(slot));
+    const int focus = index - first;
+    tft.drawRoundRect(
+        iconGridX(focus) - GRID_FRAME_W / 2,
+        iconGridY(focus) - GRID_FRAME_H / 2,
+        GRID_FRAME_W,
+        GRID_FRAME_H,
+        3,
+        fg
+    );
+
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(fg, bg);
+    const String counter = String(index + 1) + "/" + String(total);
+    tft.drawRightString(counter, tftWidth - 2, FOOTER_TEXT_Y, 1);
+    int labelEnd = tftWidth - 2 - static_cast<int>(counter.length()) * LW - 4;
+    if (pages > 1) {
+        const int dotsW = pages * (GRID_DOT + GRID_DOT_GAP) - GRID_DOT_GAP;
+        const int dotsX = labelEnd - dotsW;
+        for (int p = 0; p < pages; ++p) {
+            const int x = dotsX + p * (GRID_DOT + GRID_DOT_GAP);
+            if (p == page) tft.fillRect(x, FOOTER_TEXT_Y + 2, GRID_DOT, GRID_DOT, fg);
+            else tft.drawRect(x, FOOTER_TEXT_Y + 2, GRID_DOT, GRID_DOT, fg);
+        }
+        labelEnd = dotsX - 4;
+    }
+    int labelChars = (labelEnd - 2) / LW;
+    if (labelChars < 0) labelChars = 0;
+    tft.drawString(label.substring(0, labelChars), 2, FOOTER_TEXT_Y, 1);
+    iconGridLabelChars = labelChars;
+    compactFrameEnd();
+}
+#endif // UI_COMPACT
+
 /***************************************************************************************
 ** Function name: drawSubmenu
 ** Description:   Função para desenhar e mostrar as opçoes de contexto
 ***************************************************************************************/
 void drawSubmenu(int index, std::vector<Option> &options, const char *title) {
+#if UI_COMPACT
+    drawSubmenuCompact(index, options, title);
+    return;
+#endif
     drawStatusBar();
     int menuSize = options.size();
     tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
@@ -1270,6 +1699,10 @@ void drawSubmenu(int index, std::vector<Option> &options, const char *title) {
 }
 
 void drawStatusBar() {
+#if UI_COMPACT
+    drawStatusBarCompact(compactTitle.length() ? compactTitle.c_str() : nullptr);
+    return;
+#endif
     uint8_t bat = getBattery();
     if (bat > 0) drawBatteryStatus(bat);
 
@@ -1384,6 +1817,9 @@ void drawMainBorder(bool clear) {
     // if(wifiConnected) {tft.print(timeStr);} else {tft.print("BRUCE 1.0b");}
 
     drawStatusBar();
+#if UI_COMPACT
+    tft.setCursor(BORDER_PAD_X, BORDER_PAD_Y); // content starts under the one-line status bar
+#endif
 
 #if defined(HAS_TOUCH)
     TouchFooter();

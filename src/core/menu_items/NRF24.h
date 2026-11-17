@@ -10,6 +10,9 @@ public:
     void optionsMenu(void);
     void configMenu(void);
     void drawIcon(float scale);
+#if defined(UI_COMPACT) && UI_COMPACT
+    CompactMenuIcon compactIcon() const override { return CompactMenuIcon::Nrf24; }
+#endif
     bool hasTheme() { return bruceConfig.theme.nrf; }
     const String& themePath() override { return bruceConfig.theme.paths.nrf; }
 };

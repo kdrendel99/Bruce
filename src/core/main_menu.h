@@ -49,6 +49,12 @@ public:
     std::vector<MenuItemInterface *> getItems(void) { return _menuItems; }
     void hideAppsMenu();
 
+#if defined(UI_COMPACT) && UI_COMPACT
+    // Compact 4x2 icon grid main menu (128x64 OLED).
+    void drawCompactGrid(MenuItemInterface *hovered);
+    static void drawCompactGridCell(int item, int centerX, int centerY);
+#endif
+
     // Grid layout rendering (bruceConfig.mainMenuStyle == MAIN_MENU_GRID)
     void drawGrid(int index);
     int gridIndexOf(MenuItemInterface *item);
@@ -78,6 +84,9 @@ private:
     int _currentIndex = 0;
     int _totalItems = 0;
     std::vector<MenuItemInterface *> _menuItems;
+#if defined(UI_COMPACT) && UI_COMPACT
+    std::vector<MenuItemInterface *> _visibleItems; // non-disabled items, in grid order
+#endif
 
     GridLayout _grid;
     int _gridItemCount = 0;

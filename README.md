@@ -1,320 +1,141 @@
-![Bruce Main Menu](./media/pictures/bruce_banner.jpg)
+# Bruce 1.17 (mainline) for Heltec WiFi LoRa 32 V4 + M5Stack Cap CC1101
 
-# :shark: Bruce
+**This branch is a fork of mainline [BruceDevices/firmware](https://github.com/BruceDevices/firmware) (v1.17)** with one added board, `heltec-v4-oled`, that:
 
-Bruce is a versatile ESP32 firmware packed with offensive-security tools, built to make Red Team operations fast and portable.
+- Renders the **full Bruce UI natively on the Heltec's onboard 128×64 SSD1306 OLED** (monochrome, via a ported `UI_COMPACT` compact layout).
+- Drives an **externally-wired M5Stack Cap CC1101** for Sub-GHz (incl. the Cap's antenna switch).
+- Is navigated with the Heltec's **single PRG button**.
 
-It also supports [M5Stack](https://shop.m5stack.com), [LILYGO](https://lilygo.cc) , [RockBase IoT](https://www.rockbaseiot.com) and [Elecrow](https://www.elecrow.com) products, and works great with the Cardputer, Sticks, M5Cores, T-Decks and T-Embeds.
+> **Why mainline?** The 128×64 compact UI originally existed only in the fork
+> [Yoursel71/BruceButBetter](https://github.com/Yoursel71/BruceButBetter), which is pinned at **Bruce v1.5.0** — ~3,485 commits / 12 releases behind. That staleness caused real, already-fixed bugs. This port lifts BruceButBetter's 128×64 capability onto **current mainline 1.17** so you get the OLED UI *and* current Bruce.
 
-## :zap: Get Our Official DevKit!
+Upstream's original README is preserved as [`README.upstream.md`](./README.upstream.md).
 
-# RF REAPER
+---
 
-**RF REAPER** is our custom PCB devkit, purpose-built for Bruce!
+## ⚠️ Build requires a submodule patch — read this first
 
-Every major feature works natively, right out of the box. Sub-GHz, NFC/RFID, IR, 2.4GHz(NRF), GPS-ready, and a microSD, all driven by a beefy ESP32-S3 (16MB Flash / 8MB PSRAM). Tons of GPIOs via the AW9523 expander plus Flipper Zero & iButton header compatibility mean you can hack, mod, and build on it endlessly. Want a specific function? Ask us with an issue, we'll check it.
+The critical display fix lives in the **`lib/DisplayDrivers` submodule** (upstream: bmorcelli/DisplayDrivers), which we can't push to. It is captured as a patch. **After cloning, you MUST apply it or the OLED renders as garbled speckle:**
 
-👉 **[Buy the RF REAPER and official boards](https://shop.bruce.computer)**
-
-**Check our fully open-source hardware too:** https://bruce.computer/boards
-
-More custom devkit boards coming soon! Stay across our communities!
-
-## :building_construction: How to install
-
-### The easiest way to install Bruce is using our official Web Flasher!
-
-### Check out: https://bruce.computer/flasher
-
-Alternatively, you can download the latest binary from releases or actions and flash locally using esptool.py
-
-```sh
-esptool.py --port /dev/ttyACM0 write_flash 0x00000 Bruce-<device>.bin
+```bash
+git submodule update --init --recursive
+git -C lib/DisplayDrivers apply ../../patches/displaydrivers-tft-monochrome.patch
 ```
 
-**For m5stack devices**
+(The patch applies on DisplayDrivers SHA `79d2dc757d0684a3f63ab027920edd152972f93f`. See "The monochrome fix" below for what it does and why.)
 
-If you already use M5Launcher to manage your m5stack device, you can install it with OTA
+---
 
-Or you can burn it directly from the [m5burner tool](https://docs.m5stack.com/en/download), just search for 'Bruce' (My official builds will be uploaded by "owner" and have photos.) on the device category you want to and click on burn
+## Hardware
 
-## :keyboard: Discord Server
+| | |
+|---|---|
+| **Host** | Heltec WiFi LoRa 32 **V4** — ESP32-S3**R2** (16 MB flash, **2 MB QSPI** PSRAM), onboard **SSD1306 128×64 I²C OLED**, single **PRG** button on GPIO0. Board under test MAC `44:1b:f6:70:a2:28`. |
+| **Radio** | **M5Stack Cap CC1101** (SKU U219) — TI CC1101 Sub-GHz (315/433/868/915 MHz) + ST25R3916 NFC, 14-pin Cap-Bus, SPI. |
+| **Power** | USB-C (Cap fed from the Heltec 5V header — assembly is USB-tethered). |
 
-Contact us in our [Discord Server](https://discord.gg/WJ9XF9czVT)!
+### Heltec → M5 Cap CC1101 wiring (the authoritative pinout)
 
-## :bookmark_tabs: Wiki
+| M5 Cap pad | Heltec pin | Function |
+|---|---|---|
+| `5V OUT` | 5V (J2-2) | Supply into the Cap's regulator |
+| `GND` | GND (J2-1) | Ground |
+| `SCK` | **GPIO33** | SPI clock |
+| `MOSI` | **GPIO47** | SPI MOSI |
+| `MISO` | **GPIO48** | SPI MISO |
+| `CC CS` | **GPIO39** | **CC1101 chip-select** (see note) |
+| `GDO0` | **GPIO4** | CC1101 GDO0 |
+| `RF SW0` | **GPIO38** | Antenna-switch control line 0 |
 
-For more information on each function supported by Bruce, [read our wiki here](https://wiki.bruce.computer/).
-Also, [read our FAQ](https://wiki.bruce.computer/faq/)
+- **CC1101 CS is GPIO39.** The Cap's silkscreen swaps the `CC CS`/`NFC CS` labels vs the schematic; GPIO39 is the real CC1101 select (verified by reading VERSION=0x14).
+- **`RF SW1` is not wired** — it's the CC1101's own GDO2, forced in firmware via `IOCFG2` (mainline 1.17 already has this code).
+- **OLED (onboard):** I²C `SDA=GPIO17`, `SCL=GPIO18`, `RST=GPIO21`, panel power via **`Vext=GPIO36` (active LOW)** — Vext is enabled in `interface.cpp` before the display inits.
+- **Disabled to avoid pin conflicts:** GPS (would claim 38/39) and Grove I²C (SCL=4). GPS and the Cap can't coexist on this wiring; the Cap wins.
 
-## :computer: List of Features
+---
 
-<details>
-  <summary><h2>WiFi</h2></summary>
+## How to orient in this codebase (for future agents)
 
-- [x] Connect to WiFi
-- [x] WiFi AP
-- [x] Disconnect WiFi
-- [x] [WiFi Atks](https://wiki.bruce.computer/features/wifi/#wifi-atks)
-  - [x] [Beacon Spam](https://wiki.bruce.computer/features/wifi/#beacon-spam)
-  - [x] [Target Atk](https://wiki.bruce.computer/features/wifi/#target-atks)
-    - [x] Information
-    - [x] Target Deauth
-    - [x] EvilPortal + Deauth
-  - [x] Deauth Flood (More than one target)
-- [x] [Wardriving](https://wiki.bruce.computer/features/gps/#wardriving)
-- [x] [TelNet](https://wiki.bruce.computer/features/wifi/#telnet)
-- [x] [SSH](https://wiki.bruce.computer/features/wifi/#ssh)
-- [x] [RAW Sniffer](https://wiki.bruce.computer/features/wifi/#raw-sniffer)
-- [x] [TCP Client](https://wiki.bruce.computer/features/wifi/#client-tcp)
-- [x] [TCP Listener](https://wiki.bruce.computer/features/wifi/#listen-tcp)
-- [x] [Evil Portal](https://wiki.bruce.computer/features/wifi/#evil-portal)
-- [x] [Scan Hosts](https://wiki.bruce.computer/features/wifi/#scan-hosts) (with TCP Port scanning)
-- [x] [Responder](https://wiki.bruce.computer/features/wifi/#responder)
-- [x] [Arp Spoofing](https://wiki.bruce.computer/features/wifi/#arp-spoofing)
-- [x] [Arp Poisoning](https://wiki.bruce.computer/features/wifi/#arp-poisoning)
-- [x] [Wireguard Tunneling](https://wiki.bruce.computer/features/wifi/#wireguard-tunneling)
-- [x] Brucegotchi
-  - [x] Pwnagotchi friend
-  - [x] Pwngrid spam faces & names
-    - [x] [Optional] DoScreen a very long name and face
-    - [x] [Optional] Flood uniq peer identifiers
+Everything specific to this board is in **`boards/heltec-v4-oled/`** plus a set of `#if UI_COMPACT`-gated additions to Bruce core. Nothing here regresses other boards — all compact code is behind `UI_COMPACT`, which only this board defines.
 
-</details>
+### Files that make up the board
+- `boards/heltec-v4-oled/heltec-v4-oled.ini` — the env. `board = esp32s3`, `qio_qspi` (R2 PSRAM), `custom_16Mb.csv`. All pins are `-D` flags (mainline convention; no per-board `pins_arduino.h`). Defines `USE_LOVYANGFX` + `Panel_SSD1306` mono, the CC1101/Cap pins, `CAP_CC1101_SS_PIN=39`/`SW0_PIN=38`, single-button flags, **`-DUI_COMPACT=1`** + the compact layout macros (`STATUS_BAR_HEIGHT=14`, `BORDER_PAD_*`, `FP/FM/FG=1/1/2`), **`-DTFT_MONOCHROME=1`**, **`-DROTATION=0`**, and `lib_ignore = TFT_eSPI FastLED`.
+- `boards/heltec-v4-oled/interface.cpp` — `_setup_gpio()` (Vext power, I²C bring-up, CC1101 pin seed + default `rfModule`) and `InputHandler()` (single-button gesture → nav globals). Mainline board HAL uses weak defaults; only these two are needed.
+- `boards/heltec-v4-oled/ok_button.h` — the single-PRG-button gesture engine: **tap = Advance (DownPress), hold ≈650 ms = Select, double-tap = Back**. `DoubleMs=200` (tuned for faster cycling).
 
-<details>
-  <summary><h2>BLE</h2></summary>
+### The `UI_COMPACT` compact UI (ported from BruceButBetter)
+Makes the full Bruce UI fit 128×64: 4×2 icon grid main menu, 4-row lists, compact status bar + footer. All gated `#if UI_COMPACT`.
+- `src/core/menu_items/compact_icons.{cpp,h}` — the vector-drawn (not bitmap) icon set. **New files.**
+- `src/core/display.cpp` / `display.h` — compact helpers (`drawCompactList`, `drawStatusBarCompact`, `drawCompactFooter`, `drawIconGrid`, `iconGridX/Y`, `iconGridMove`, `compactFrameBegin/End`) + `#if UI_COMPACT` branches grafted into `loopOptions`, `drawStatusBar`, `drawSubmenu`, `drawOptions`, `progressHandler`, `displayScrollingText`, `drawMainBorder`; grid geometry macros (`ICON_GRID_*`, `GRID_FRAME_*`, `CMENU_*`).
+- `include/MenuItemInterface.h` — `compactIcon()` virtual + `drawGridIcon()`; `draw()` routes to `drawCompactMainGrid()` under `UI_COMPACT`.
+- `src/core/main_menu.{h,cpp}` — `drawCompactGrid` / `drawCompactGridCell` / `drawCompactMainGrid`; main-menu options get a hover lambda that renders the compact grid.
+- 17 `src/core/menu_items/*Menu.h` — each adds a `compactIcon()` override (WiFi, BLE, RF, IR, …).
 
-- [x] [BLE Scan](https://wiki.bruce.computer/features/ble/#ble-scan)
-- [x] Bad BLE - Run Ducky scripts, similar to [BadUsb](https://wiki.bruce.computer/features/ble/#badble)
-- [x] BLE Keyboard - Cardputer and T-Deck Only
-- [x] iOS Spam
-- [x] Windows Spam
-- [x] Samsung Spam
-- [x] Android Spam
-- [x] Spam All
-</details>
+### The monochrome fix (the hard-won one) — `patches/displaydrivers-tft-monochrome.patch`
+mainline's `DisplayDrivers` LovyanGFX backend **ignored `TFT_MONOCHROME`**, so every non-pure-white color (the theme color, greys, the boot splash) was dithered into speckle on the 1-bit panel — garbling icons and the splash while leaving 1-bit bitmaps (like the old full-size bat logo) clean. The patch adds BruceButBetter's `monoColor()` snap (`TFT_COLOR()` wrapped around the color arg of every primitive: drawPixel/line/rect/roundRect/circle/arc/triangle/ellipse/fillScreen/setTextColor, etc.; `pushImage`/bitmaps left alone) + public `startWrite/endWrite` for frame batching. **This is the fix that made the UI legible.**
 
-<details>
-  <summary><h2>RF</h2></summary>
+---
 
-- [x] Scan/Copy
-- [x] [Custom SubGhz](https://wiki.bruce.computer/features/rf/#replay-payloads-like-flipper)
-- [x] Spectrum
-- [x] Jammer Full (sends a full squared wave into output)
-- [x] Jammer Intermittent (sends PWM signal into output)
-- [x] Config
-  - [x] RF TX Pin
-  - [x] RF RX Pin
-  - [x] RF Module
-    - [x] RF433 T/R M5Stack
-    - [x] [CC1101 (Sub-Ghz)](https://wiki.bruce.computer/features/rf/#cc1101)
-  - [x] RF Frequency
-- [x] Replay
-</details>
+## Build & flash
 
-<details>
-  <summary><h2>RFID</h2></summary>
+```bash
+# One-time after clone:
+git submodule update --init --recursive
+git -C lib/DisplayDrivers apply ../../patches/displaydrivers-tft-monochrome.patch
 
-- [x] Read tag
-- [x] Read 125kHz
-- [x] Clone tag
-- [x] Write NDEF records
-- [x] Amiibolink
-- [x] Chameleon
-- [x] Write data
-- [x] Erase data
-- [x] Save file
-- [x] Load file
-- [x] Config
-  - [x] [RFID Module](https://wiki.bruce.computer/features/rfid/#supported-modules)
-    - [x] PN532
-    - [x] PN532Killer
-- [ ] Emulate tag
-</details>
+# Build:
+pio run -e heltec-v4-oled          # or: uvx --from platformio pio run -e heltec-v4-oled   (~2-4 min)
 
-<details>
-  <summary><h2>IR</h2></summary>
+# Flash (board on USB):
+pio run -e heltec-v4-oled -t upload
+```
+- Toolchain: PlatformIO + the pinned pioarduino platform (see root `platformio.ini`).
+- **macOS port quirk:** the ESP32-S3 native USB re-enumerates between the app port (`/dev/cu.usbmodem<serial>`) and the ROM-bootloader port (`/dev/cu.usbmodem1101`) across resets. Retry on whichever `/dev/cu.usbmodem*` is present; `--connect-attempts 15` helps.
 
-- [x] TV-B-Gone
-- [x] IR Receiver
-- [x] [Custom IR (NEC, NECext, SIRC, SIRC15, SIRC20, Samsung32, RC5, RC5X, RC6)](https://wiki.bruce.computer/features/ir/#replay-payloads-like-flipper)
-- [x] Config - [X] Ir TX Pin - [X] Ir RX Pin
-</details>
+### Verify without looking at the screen
+```bash
+# Serial CLI (115200, open with DTR asserted, '#' prompt):
+rf rx -frequency 433.92     # -> "cc1101 Connection OK"  (confirms Cap/CC1101)
+stopscan
+```
+Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 
-<details>
-  <summary><h2>FM</h2></summary>
+---
 
-- [x] [Broadcast standard](https://wiki.bruce.computer/features/fm/#broadcast-standard)
-- [x] [Broadcast reserved](https://wiki.bruce.computer/features/fm/#broadcast-standard)
-- [x] [Broadcast stop](https://wiki.bruce.computer/features/fm/#broadcast-stop)
-- [ ] [FM Spectrum](https://wiki.bruce.computer/features/fm/#fm-spectrum)
-- [ ] [Hijack Traffic Announcements](https://wiki.bruce.computer/features/fm/#hijack-ta)
-- [ ] [Config](https://wiki.bruce.computer/features/fm/#bookmark_tabs-config)
-</details>
+## Using it
 
-<details>
-  <summary><h2>NRF24</h2></summary>
+- **On-device (single PRG button):** tap = next, hold ≈0.65 s = select/enter, double-tap = back. Main menu is a 4×2 icon grid; enter for lists.
+- **Serial CLI** (USB): `help`, `rf rx -frequency <MHz>`, `rf scan <startHz> <stopHz>`, `stopscan`.
+- **Phone over Bluetooth:** mainline ships the BLE companion API. Enable on-device: **Config → Advanced → Toggle BLE API** (stateless toggle, no indicator — press once; it advertises as **"Bruc"**). Connect with **Bruce Remote for iOS** (sideloaded from BruceDevices/App-IOS) or any Nordic-UART BLE client (nRF Connect). BLE (not WiFi) means it survives WiFi attacks. **Note: the BLE-API enable flag does NOT persist across reboot** — re-toggle after each power-cycle (see TODO).
 
-- [x] [NRF24 Jammer](https://wiki.bruce.computer/features/nrf24/)
-- [x] 2.4G Spectrum
-- [ ] Mousejack
-</details>
+---
 
-<details>
-  <summary><h2>Scripts</h2></summary>
+## Key gotchas (don't re-learn these)
 
-- [x] [JavaScript Interpreter](https://wiki.bruce.computer/features/js-interpreter/) [Credits to justinknight93](https://github.com/justinknight93/Doolittle)
-</details>
+- **Apply the DisplayDrivers patch** or everything speckles. (`TFT_MONOCHROME` not honored by mainline's backend.)
+- **`-DROTATION=0`** for this board. mainline's DisplayDrivers backend applies rotation 180° off from BruceButBetter's — BBB used `ROTATION=2`; here that's upside-down, so we use `0`.
+- **CC1101 CS = GPIO39** (silkscreen labels swapped).
+- **`lib_ignore = FastLED`** — on ESP32-S3 LTO builds FastLED triggers a `windowed longcall crosses 1GB boundary` link error; the Heltec has no RGB LED so it's unused anyway.
+- **`lib_ignore = TFT_eSPI`** — LovyanGFX replaces it for the OLED.
+- **`NO_LR_BUTTONS`**: the main icon grid navigates on UP/DOWN, so the single-button "advance" emits `DownPress`.
+- **R2 silicon → `qio_qspi`.** GPIO33–37 are free GPIOs here (unlike N16R8/OPI-PSRAM boards).
+- **ESP32-S3 BLE + WiFi share one 2.4 GHz radio** — coexist fine normally; aggressive WiFi attack modes may degrade BLE.
 
-<details>
-  <summary><h2>Others</h2></summary>
+---
 
-- [x] Mic Spectrum
-- [x] [QRCodes](https://wiki.bruce.computer/features/others/#qrcodes)
-  - [x] Custom
-  - [x] PIX (Brazil bank transfer system)
-- [x] [SD Card Mngr](https://github.com/pr3y/Bruce/wiki/Others#sd-card-mngr)
-  - [x] View image (jpg)
-  - [x] File Info
-  - [x] [Wigle Upload](https://wiki.bruce.computer/features/gps/#how-to-use-wigle)
-  - [x] Play Audio
-  - [x] View File
-- [x] LittleFS Mngr
-- [x] [WebUI](https://wiki.bruce.computer/controlling-device/webui/)
-  - [x] Server Structure
-  - [x] Html
-  - [x] SDCard Mngr
-  - [x] Spiffs Mngr
-- [x] Megalodon
-- [x] [BADUsb (New features, LittleFS and SDCard)](https://wiki.bruce.computer/features/others/#badusb)
-- [x] USB Keyboard - Cardputer and T-Deck Only
-- [x] [iButton](https://wiki.bruce.computer/features/others/#ibutton)
-- [x] LED Control
-</details>
+## Known gaps / TODO
 
-<details>
-  <summary><h2>Wire Tools</h2></summary>
+- **BLE API doesn't persist / auto-start** — the enable flag is a RAM-only static (`ble_api_enabled` in `src/core/settings.cpp`); resets OFF every boot. TODO: persist it + auto-`bleApi.setup()` at boot (simplest: call it at end of `interface.cpp` setup).
+- **On-screen keyboard** not compacted — usable but cramped (single-button entry is painful anyway).
+- **Some popup/message boxes** may render tall on 64 px (functional, not polished).
+- **Frame batching** uses the restored `startWrite/endWrite` (via the patch).
+- Not yet exercised: **live RX decode of a real transmitter / TX / RSSI scan** (detection + per-band antenna switching are confirmed).
 
-- [x] UART Terminal
-  - [x] Baudrate presets + custom (300..5000000)
-  - [x] Custom RX/TX pins (Config > UART Pins)
-  - [x] Live send/receive terminal
-- [x] I2C Bus
-  - [x] Device scan (0x08-0x77)
-  - [x] Register read/write
-  - [x] 256-byte register dump
-- [x] SPI Bus
-  - [x] JEDEC flash detect
-  - [x] CS-framed HEX console (arbitrary transfers)
-- [x] JTAG Scanner
-  - [x] IDCODE read (TAP reset + DR shift, bit-banged TCK/TMS/TDI/TDO)
-- [x] Multimeter
-  - [x] Continuity: pin <-> pin (A driven LOW, B pulled up) with beeper
-  - [x] Continuity: pin -> GND (internal pull-up) with beeper
-  - [x] Held-pin detection (probe driven by another device, e.g. ADV Grove on CH9329)
-- [x] Serial control: `wire uart|i2c|spi|jtag|cont ...` commands over the serial CLI
-</details>
+---
 
-<details>
-  <summary><h2>Clock</h2></summary>
+## Lineage / related
 
-- [x] RTC Support
-- [x] NTP time adjust
-- [x] Manual adjust
-</details>
-
-<details>
-  <summary><h2>Connect (ESPNOW)</h2></summary>
-
-- [x] Send File
-- [x] Receive File
-- [x] Send Commands
-- [x] Receive Commands
-</details>
-
-<details>
-  <summary><h2>Config</h2></summary>
-
-- [x] Brightness
-- [x] Dim Time
-- [x] Orientation
-- [x] UI Color
-- [x] Boot Sound on/off
-- [x] Clock
-- [x] Sleep
-- [x] Restart
-</details>
-
-## Specific functions per Device, the ones not mentioned here are available to all.
-
-| Device                                                                                                                                                                                      | CC1101 | NRF24 | FM Radio |        PN532         | Mic  | BadUSB | RGB Led | Speaker | Fuel Gauge | LITE_VERSION |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----: | :---: | :------: | :------------------: | :--: | :----: | :-----: | :-----: | :--------: | :----------: |
-| [M5Stack Cardputer](https://shop.m5stack.com/products/m5stack-cardputer-kit-w-m5stamps) (and ADV)                                                                                           |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: |  :ok:  |  :ok:   | NS4168  |    :x:     |     :x:      |
-| [M5Stack M5StickC PLUS2](https://shop.m5stack.com/products/m5stickc-plus2-esp32-mini-iot-development-kit)                                                                                   |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: | :ok:¹  |   :x:   |  Tone   |    :x:     |     :x:      |
-| [M5Stack M5StickC PLUS](https://shop.m5stack.com/products/m5stickc-plus-esp32-pico-mini-iot-development-kit)                                                                                |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: | :ok:¹  |   :x:   |  Tone   |    :x:     |     :x:²     |
-| [M5Stack M5Core BASIC](https://shop.m5stack.com/products/basic-core-iot-development-kit)                                                                                                    |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: | :ok:¹  |   :x:   |  Tone   |    :x:     |     :x:      |
-| [M5Stack M5Core2](https://shop.m5stack.com/products/m5stack-core2-esp32-iot-development-kit-v1-1)                                                                                           |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: | :ok:¹  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [M5Stack M5CoreS3](https://shop.m5stack.com/products/m5stack-cores3-esp32s3-lotdevelopment-kit)/[SE](https://shop.m5stack.com/products/m5stack-cores3-se-iot-controller-w-o-battery-bottom) |  :ok:  | :ok:  |   :ok:   |         :ok:         | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [M5Stack StackChan](https://shop.m5stack.com/products/stackchan-kawaii-co-created-open-source-ai-desktop-robot) (CoreS3 on the robot body)                                                  |  :ok:  | :ok:  |   :ok:   |    ST25R3916 (I2C)   | :x:  |  :ok:  |   :x:   | AW88298 |    :x:     |     :x:      |
-| [JCZN CYD&#x2011;2432S028](https://www.aliexpress.us/item/3256804774970998.html)                                                                                                            |  :ok:  | :ok:  |   :ok:   |         :ok:         | :x:  | :ok:¹  |   :x:   |   :x:   |    :x:     |     :x:²     |
-| [Lilygo T&#x2011;Embed CC1101](https://lilygo.cc/products/t-embed-cc1101)                                                                                                                   |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: |  :ok:  |  :ok:   |  :ok:   |    :ok:    |     :x:      |
-| [Lilygo T&#x2011;Embed](https://lilygo.cc/products/t-embed)                                                                                                                                 |  :ok:  | :ok:  |   :ok:   |         :ok:         | :ok: |  :ok:  |  :ok:   |  :ok:   |    :x:     |     :x:      |
-| [Lilygo T-Display-S3](https://lilygo.cc/products/t-display-s3)                                                                                                                              |  :ok:  | :ok:  |   :x:    |         :x:          | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [Lilygo T&#x2011;Deck](https://lilygo.cc/products/t-deck) ([and pro](https://lilygo.cc/products/t-deck-plus-1))                                                                             |  :ok:  |  :x:  |   :x:    |         :x:          | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [Lilygo T-Watch-S3](https://lilygo.cc/products/t-watch-s3)                                                                                                                                  |  :x:   |  :x:  |   :x:    |         :x:          | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [Lilygo T-LoRa Pager](https://lilygo.cc/products/t-lora-pager)                                                                                                                              |  :x:   |  :x:  |   :x:    |         :x:          | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [Smoochiee V2](https://www.pcbway.com/project/shareproject/Bruce_PCB_Smoochiee_d6a0284b.html)                                                                                               |  :ok:  | :ok:  |   :x:    |         :ok:         | :x:  |  :ok:  |   :x:   |   :x:   |    :x:     |     :x:      |
-| [ESP32-C5](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c5/esp32-c5-devkitc-1/user_guide.html)                                                                           |  :ok:  | :ok:  |   :x:    |         :ok:         | :x:  |  :x:   |   :x:   |   :x:   |    :x:     |     :x:      |
-| [Bruce RF Reaper](https://www.elecrow.com/bruce-pcb-rf-reaper.html)                                                                                                                         |  :ok:  | :ok:  |   :x:    | :ok: but w/ ST25R3916 | :x:  |  :ok:  |  :ok:   |   :x:   |    :ok:    |     :x:      |
-| [Elecrow 24B](https://www.elecrow.com/2-4inch-esp32-miner-lcd-display-2pcs-cryptocurrency-solo-miner-with-1000kh-s-hashrate.html)                                                            |  :ok:  | :ok:  |   :ok:   |         :ok:         | :x:  | :ok:¹  |   :x:   |   :x:   |    :x:     |     :x:²     |
-| [Elecrow 3.5"](https://www.elecrow.com/esp-terminal-with-esp32-3-5-inch-parallel-480x320-tft-capacitive-touch-display-rgb-by-chip-ili9488.html)                                                                                                                                                        |  :ok:  | :ok:  |   :ok:   |         :ok:         | :x:  | :ok:¹  |   :x:   |   :x:   |    :x:     |     :x:²     |
-| [NM-CYD-C5 + RF HAT](https://rockbase.shop/products/nm-cyd-c5-colorful)                                                                                                                         |  :ok:  | :ok:  |   :x:    | :ok: | :x:  |  :ok:  |  :ok:   |   :x:   |    :ok:    |     :x:      |
-| [Waveshare ESP32-C5-Touch-LCD-3.5](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5) |  :x:  | :x:  |   :x:    | :ok: | :ok: |  :x:   |  :x:   |  :ok:   |    :ok:    |     :x:      |
-² CYD have a LITE_VERSION version for Launcher Compatibility
-¹ Core, CYD and StickCs Bad-USB: [here](https://wiki.bruce.computer/features/others/#badusb)
-
-_LITE_VERSION_: TelNet, SSH, WireGuard, ScanHosts, RawSniffer, Brucegotchi, BLEBacon, BLEScan and Interpreter are NOT available for M5Launcher Compatibility
-
-## :sparkles: Why and how does it look?
-
-Bruce stems from a keen observation within the community focused on devices like Flipper Zero. While these devices offered a glimpse into the world of offensive security, there was a palpable sense that something more could be achieved without being that overpriced, particularly with the robust and modular hardware ecosystem provided by ESP32 Devices, Lilygo and M5Stack products.
-
-![Bruce Main Menu](./media/pictures/pic1.png)
-![Bruce on M5Core](./media/pictures/core.png)
-![Bruce on Stick](./media/pictures/stick.png)
-![Bruce on CYD](./media/pictures/cyd.png)
-![Bruce on CYD with NM-RF-HAT](./media/pictures/bruce-cyd.png)
-
-Other media can be [found here](./media/).
-
-## :clap: Acknowledgements
-
-- [@bmorcelli](https://github.com/bmorcelli) for new core and a bunch of new features, also porting to many devices!
-- [@IncursioHack](https://github.com/IncursioHack) for adding RF and RFID modules features.
-- [@Luidiblu](https://github.com/Luidiblu) for logo and UI design assistance.
-- [@eadmaster](https://github.com/eadmaster) for adding a lot of features.
-- [@rennancockles](https://github.com/rennancockles) for a lot of RFID code, refactoring and others features.
-- [@7h30th3r0n3](https://github.com/7h30th3r0n3) refactoring and a lot of help with WiFi attacks.
-- [@Tawank](https://github.com/Tawank) refactoring interpreter among many other things
-- [@geo-tp](https://github.com/geo-tp) contributing with lots of PRs and Wire Tools code
-- @pablonymous RF functions to read RAW Data
-- [Smoochiee](https://github.com/smoochiee) for Bruce PCB design.
-- TH3_KR4K3N for Stick cplus extender PCB design.
-- Everyone who contributed in some way to the project, thanks :heart:
-
-Bruce also stands on the shoulders of other great open-source firmware projects,
-which inspired features and code across the project:
-
-- [ESP32Marauder](https://github.com/justcallmekoko/ESP32Marauder) by [@justcallmekoko](https://github.com/justcallmekoko) — WiFi/Bluetooth offensive toolkit.
-- [Launcher](https://github.com/bmorcelli/Launcher) by [@bmorcelli](https://github.com/bmorcelli) — the multi-app launcher/bootloader for the devices.
-- [Evil-M5Project](https://github.com/7h30th3r0n3/Evil-M5Project) by [@7h30th3r0n3](https://github.com/7h30th3r0n3) — WiFi attack suite for M5Stack.
-- [M5Stick-Nemo](https://github.com/n0xa/m5stick-nemo) by [@n0xa](https://github.com/n0xa) — multi-tool firmware for M5Stick devices.
-
-Bruce builds on many free-software libraries, and parts of the RF and NFC/RFID
-modules are derived from other projects. See [THIRD_PARTY.md](./THIRD_PARTY.md)
-for third-party attribution and copyleft-compliance details.
-
-## :construction: Disclaimer
-
-Bruce is a tool for cyber offensive and red team operations, distributed under the terms of the Affero General Public License (AGPL). It is intended for legal and authorized security testing purposes only. Use of this software for any malicious or unauthorized activities is strictly prohibited. By downloading, installing, or using Bruce, you agree to comply with all applicable laws and regulations. This software is provided free of charge, and we do not accept payments for copies or modifications. The developers of Bruce assume no liability for any misuse of the software. Use at your own risk.
+- Mainline Bruce: https://github.com/BruceDevices/firmware (this fork's base, v1.17)
+- 128×64 UI source: https://github.com/Yoursel71/BruceButBetter (BruceButBetter, Bruce v1.5.0 — the compact UI was lifted from here, with credit)
+- Display driver: https://github.com/bmorcelli/DisplayDrivers (the `lib/DisplayDrivers` submodule; our mono fix is the committed patch)
+- Prior Heltec Bruce fork referenced for pin constants: https://github.com/Unkl3Errl/HeltecFirmware

@@ -8,9 +8,21 @@
 #include <SD.h>
 #include <globals.h>
 #define BORDER_OFFSET_FROM_SCREEN_EDGE 5
+// Layout constants — overridable per-board via build_flags (e.g. small OLED). When a board does
+// not -D them, the original computed defaults (color TFT) stay in effect.
+#ifndef BORDER_PAD_X
 #define BORDER_PAD_X (LW * FP + 4)
+#endif
+#ifndef STATUS_BAR_HEIGHT
 #define STATUS_BAR_HEIGHT (LH * FM + 14)
+#endif
+#ifndef BORDER_PAD_Y
 #define BORDER_PAD_Y (STATUS_BAR_HEIGHT - 2)
+#endif
+// Compact layout for very small screens (e.g. 128x64 OLED). Boards opt in with -DUI_COMPACT=1.
+#ifndef UI_COMPACT
+#define UI_COMPACT 0
+#endif
 #define MENU_TYPE_MAIN 0
 #define MENU_TYPE_SUBMENU 1
 #define MENU_TYPE_REGULAR 2
@@ -36,6 +48,23 @@ struct Opt_Coord {
     uint16_t bgcolor = bruceConfig.bgColor;
 };
 void displayScrollingText(const String &text, Opt_Coord &coord, bool highlight = false);
+
+#if UI_COMPACT
+void requestCompactMenuRedraw();
+
+// Main menu icon grid (128x64): 4 columns x 2 rows per page, 16 px icons.
+#define ICON_GRID_COLS 4
+#define ICON_GRID_ROWS 2
+#define ICON_GRID_PAGE (ICON_GRID_COLS * ICON_GRID_ROWS)
+#define ICON_GRID_ICON_SIZE 16
+// Draws grid item `item` with its icon centred on (centerX, centerY).
+typedef void (*IconGridCellFn)(int item, int centerX, int centerY);
+void drawIconGrid(int index, int total, const String &label, IconGridCellFn drawCell);
+// New focus after a grid step: dx = -1/+1 (LEFT/RIGHT, reading order), dy = -1/+1 (UP/DOWN, row/page).
+int iconGridMove(int index, int total, int dx, int dy);
+// Left side of the status bar on the following screens; the main menu clears it.
+void setCompactScreenTitle(const String &title);
+#endif
 
 #if !defined(LITE_VERSION)
 
