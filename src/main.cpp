@@ -460,6 +460,12 @@ void setup() {
         SAFE_STACK_BUFFER_SIZE / 4
     ); // Must be invoked before Serial.begin(). Default is 256 chars
     Serial.begin(115200);
+    // USB-CDC Serial blocks the calling task when the host holds the port open but stops
+    // reading (its TX FIFO fills). On this board the main loop both prints verbose menu
+    // state AND drives the BLE screen-mirror stream, so a stalled serial write freezes the
+    // Bruce Remote mirror until the host drains the port. Make TX non-blocking (drop instead
+    // of block) so nothing a serial host does can stall the UI/BLE.
+    Serial.setTxTimeoutMs(0);
 
     log_d("Total heap: %d", ESP.getHeapSize());
     log_d("Free heap: %d", ESP.getFreeHeap());
