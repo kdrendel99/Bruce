@@ -36,11 +36,19 @@ enum tftFuncs : uint8_t { // DO NOT CHANGE THE ORDER, ADD NEW FUNCTIONS TO THE E
 #define MAX_LOG_SIZE 128
 #define MAX_LOG_IMAGES 1
 #define MAX_LOG_IMG_PATH 512
+// Depth of the async stream queue (decoupled from the dedup-log size above). A single
+// full-screen repaint of the compact icon grid is ~61 draw ops; with the old 64-entry
+// queue and a drop-on-full enqueue, any lag in the BLE drain clipped the tail of the
+// frame — the last icons and the focus rectangle (both drawn last) — so the Bruce Remote
+// mirror showed a partial menu with no selection cursor. Buffer two full frames so one
+// repaint never overflows while the stream catches up.
+#define ASYNC_SERIAL_QUEUE_DEPTH 128
 #else
 #define MAX_LOG_ENTRIES 40
 #define MAX_LOG_SIZE 64
 #define MAX_LOG_IMAGES 1
 #define MAX_LOG_IMG_PATH 256
+#define ASYNC_SERIAL_QUEUE_DEPTH 96
 #endif
 #define LOG_PACKET_HEADER 0xAA
 

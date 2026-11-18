@@ -88,10 +88,19 @@ void tft_logger::asyncSerialTaskFunc(void *pv) {
             if (fn == DRAWIMAGE) {
                 if (!logger->images) {
                     uint8_t size = entry[1];
+                    if (size > MAX_LOG_SIZE) size = MAX_LOG_SIZE; // entry is MAX_LOG_SIZE bytes
                     serialDevice->write(entry, size);
                     continue;
                 }
                 uint8_t imageSlot = entry[12];
+                if (imageSlot >= MAX_LOG_IMAGES) {
+                    // No valid image slot stored: emit the packet as-is rather than indexing
+                    // images[] out of bounds.
+                    uint8_t size = entry[1];
+                    if (size > MAX_LOG_SIZE) size = MAX_LOG_SIZE;
+                    serialDevice->write(entry, size);
+                    continue;
+                }
                 const char *imgPath = logger->images[imageSlot];
                 size_t baseLen = 12; // AA SS FN XX XX YY YY Ce Ce Ms Ms FS
                 size_t imgLen = strlen(imgPath);
@@ -103,6 +112,7 @@ void tft_logger::asyncSerialTaskFunc(void *pv) {
                 serialDevice->write(packet, baseLen + imgLen);
             } else {
                 uint8_t size = entry[1];
+                if (size > MAX_LOG_SIZE) size = MAX_LOG_SIZE; // entry is MAX_LOG_SIZE bytes
                 serialDevice->write(entry, size);
             }
         }
@@ -119,7 +129,7 @@ void tft_logger::startAsyncSerial() {
     if (async_serial) return;
     async_serial = true;
     setLogging(true);
-    asyncSerialQueue = xQueueCreate(MAX_LOG_ENTRIES, sizeof(tftLog));
+    asyncSerialQueue = xQueueCreate(ASYNC_SERIAL_QUEUE_DEPTH, sizeof(tftLog));
     getTftInfo();
     // Can it work with 2048 bytes of heap??
     xTaskCreate(asyncSerialTaskFunc, "async_serial", 4096, this, 1, &asyncSerialTask);
@@ -128,8 +138,18 @@ void tft_logger::startAsyncSerial() {
 void tft_logger::stopAsyncSerial() {
     if (!async_serial) return;
     async_serial = false;
+    // The worker task may still be dereferencing log/images or draining the queue. setLogging(false)
+    // frees those buffers, so we MUST wait for the task to actually exit first, otherwise the worker
+    // reads freed memory -> heap corruption. The task drains the queue, deletes the queue, nulls
+    // asyncSerialTask and then self-deletes on exit, so block until the handle is cleared.
+    const uint32_t timeoutMs = 2000;
+    uint32_t waited = 0;
+    while (asyncSerialTask != NULL && waited < timeoutMs) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        waited += 10;
+    }
+    // Only safe to free now that the worker has stopped touching log/images and deleted the queue.
     setLogging(false);
-    // task will exit on its own and clear handle
 }
 void tft_logger::getTftInfo() {
     uint8_t buffer[16];
@@ -171,6 +191,7 @@ void tft_logger::getBinLog(uint8_t *outBuffer, size_t &outSize) {
             if (!images) continue;
             uint8_t imageSlot = entry[12]; // AA SS FN XX XX YY YY Ce Ce Ms Ms FS SLOT
                                            // 0  1  2  3  4  5  6  7  8  9  10 11 12
+            if (imageSlot >= MAX_LOG_IMAGES) continue; // no valid slot -> skip, don't index OOB
             const char *imgPath = images[imageSlot];
             size_t baseLen = 12; // AA SS FN XX XX YY YY Ce Ce Ms Ms FS + PATH
             size_t imgLen = strlen(imgPath);
@@ -184,6 +205,7 @@ void tft_logger::getBinLog(uint8_t *outBuffer, size_t &outSize) {
             outBuffer[outSize - imgLen - baseLen + 1] = baseLen + imgLen; // update packet size
         } else {
             uint8_t size = entry[1];
+            if (size > MAX_LOG_SIZE) size = MAX_LOG_SIZE; // entry is MAX_LOG_SIZE bytes
             if (outSize + size > MAX_LOG_SIZE * MAX_LOG_ENTRIES) continue;
             memcpy(outBuffer + outSize, entry, size);
             outSize += size;
@@ -199,6 +221,7 @@ bool tft_logger::isLogEqual(const tftLog &a, const tftLog &b) {
     uint8_t sizeA = a.data[1];
     uint8_t sizeB = b.data[1];
     if (sizeA != sizeB) return false;
+    if (sizeA > MAX_LOG_SIZE) sizeA = MAX_LOG_SIZE; // data[1] is attacker/corruption controlled
     return memcmp(a.data, b.data, sizeA) == 0;
 }
 
@@ -209,7 +232,9 @@ void tft_logger::pushLogIfUnique(const tftLog &l) {
             return; // Entry already exists
         }
     }
-    memcpy(log[logWriteIndex].data, l.data, l.data[1]);
+    uint8_t copyLen = l.data[1];
+    if (copyLen > MAX_LOG_SIZE) copyLen = MAX_LOG_SIZE; // guard: data[1] must not exceed the buffer
+    memcpy(log[logWriteIndex].data, l.data, copyLen);
     logWriteIndex = (logWriteIndex + 1) % MAX_LOG_ENTRIES;
     if (logCount < MAX_LOG_ENTRIES) ++logCount;
     if (async_serial && asyncSerialQueue) { xQueueSend(asyncSerialQueue, &l, 0); }
@@ -285,6 +310,13 @@ void tft_logger::imageToBin(uint8_t fs, String file, int x, int y, bool center, 
                 break;
             }
         }
+    }
+
+    // All image slots are taken by other paths: do NOT log this image. Indexing images[0xFF] below
+    // (strlen/memcpy) would read far out of bounds.
+    if (imageSlot >= MAX_LOG_IMAGES) {
+        restoreLogger();
+        return;
     }
 
     // Use image path as identifier in log.data

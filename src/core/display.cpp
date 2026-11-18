@@ -904,8 +904,16 @@ int loopOptions(
             int dy = 0;
 #if defined(NO_LR_BUTTONS)
             // 4-button (or single-button) layout: LEFT/RIGHT are not wired, so UP/DOWN walk the grid.
-            if (check(UpPress)) dx = -1;
-            else if (check(DownPress)) dx = 1;
+            // The Bruce Remote app drives the menu entirely with Next/Prev (its d-pad and the repaint
+            // nudge it sends to bootstrap the screen mirror), so accept those as DOWN/UP here too.
+            // Without this the remote can never move the selection and the mirrored menu body never
+            // repaints — only the status bar streams and the body stays black. Bitwise | (not ||) so
+            // both flags are always consumed. The on-device single button only sets DownPress, so
+            // physical navigation is unaffected.
+            const bool navUp = check(UpPress) | check(PrevPress);
+            const bool navDown = check(DownPress) | check(NextPress);
+            if (navUp) dx = -1;
+            else if (navDown) dx = 1;
 #else
             if (check(PrevPress)) dx = -1;
             else if (check(NextPress)) dx = 1;
