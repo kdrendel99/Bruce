@@ -106,7 +106,7 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 
 - **On-device (single PRG button):** tap = next, hold ≈0.65 s = select/enter, double-tap = back. Main menu is a 4×2 icon grid; enter for lists.
 - **Serial CLI** (USB): `help`, `rf rx -frequency <MHz>`, `rf scan <startHz> <stopHz>`, `stopscan`.
-- **Phone over Bluetooth:** mainline ships the BLE companion API. Enable on-device: **Config → Advanced → Toggle BLE API** (stateless toggle, no indicator — press once; it advertises as **"Bruc"**). Connect with **Bruce Remote for iOS** (sideloaded from BruceDevices/App-IOS) or any Nordic-UART BLE client (nRF Connect). BLE (not WiFi) means it survives WiFi attacks. **Note: the BLE-API enable flag does NOT persist across reboot** — re-toggle after each power-cycle (see TODO).
+- **Phone over Bluetooth:** mainline ships the BLE companion API; this board **auto-starts it on boot** (advertises as **"Bruce"**, no manual toggle needed). Connect with **Bruce Remote for iOS** (sideloaded from BruceDevices/App-IOS) or any Nordic-UART BLE client (nRF Connect). BLE (not WiFi) means it survives WiFi attacks. The app's **Remote Control** screen mirror and d-pad both work (full menu + selection cursor stream; d-pad navigates).
 
 ---
 
@@ -117,7 +117,9 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 - **CC1101 CS = GPIO39** (silkscreen labels swapped).
 - **`lib_ignore = FastLED`** — on ESP32-S3 LTO builds FastLED triggers a `windowed longcall crosses 1GB boundary` link error; the Heltec has no RGB LED so it's unused anyway.
 - **`lib_ignore = TFT_eSPI`** — LovyanGFX replaces it for the OLED.
-- **`NO_LR_BUTTONS`**: the main icon grid navigates on UP/DOWN, so the single-button "advance" emits `DownPress`.
+- **`NO_LR_BUTTONS`**: the main icon grid navigates on UP/DOWN, so the single-button "advance" emits `DownPress`. The compact grid also accepts `Next`/`Prev` (mapped to DOWN/UP) so the Bruce Remote app — which drives everything with Next/Prev — can navigate and trigger the repaint that bootstraps the screen mirror.
+- **Serial-cmds task stack** is bumped to 16 KB (`SERIAL_CMDS_TASK_STACK_SIZE`). The default 8 KB overflows on the BLE command path (deep `SimpleCLI::parse` + JSON + `BLESerialService`) and corrupts the heap → random reboot when opening Remote Control.
+- **Screen-mirror stream queue** (`ASYNC_SERIAL_QUEUE_DEPTH`, 128) is decoupled from the dedup-log size — a full compact-grid frame is ~61 ops and the old 64-deep drop-on-full queue clipped the frame tail (missing icons / no cursor) under BLE drain lag.
 - **R2 silicon → `qio_qspi`.** GPIO33–37 are free GPIOs here (unlike N16R8/OPI-PSRAM boards).
 - **ESP32-S3 BLE + WiFi share one 2.4 GHz radio** — coexist fine normally; aggressive WiFi attack modes may degrade BLE.
 
@@ -125,10 +127,10 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 
 ## Known gaps / TODO
 
-- **BLE API doesn't persist / auto-start** — the enable flag is a RAM-only static (`ble_api_enabled` in `src/core/settings.cpp`); resets OFF every boot. TODO: persist it + auto-`bleApi.setup()` at boot (simplest: call it at end of `interface.cpp` setup).
 - **On-screen keyboard** not compacted — usable but cramped (single-button entry is painful anyway).
 - **Some popup/message boxes** may render tall on 64 px (functional, not polished).
 - **Frame batching** uses the restored `startWrite/endWrite` (via the patch).
+- **Mirror re-streams the full frame each repaint** — the dedup log is effectively off for the grid (`drawIconGrid` fillRect-clears the body each frame), so every repaint re-sends ~61 ops. Harmless with the 128-deep queue; could be optimized to stream only changed cells.
 - Not yet exercised: **live RX decode of a real transmitter / TX / RSSI scan** (detection + per-band antenna switching are confirmed).
 
 ---
