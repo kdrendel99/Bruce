@@ -36,18 +36,21 @@ git -C lib/DisplayDrivers apply ../../patches/displaydrivers-tft-monochrome.patc
 
 ### Heltec → M5 Cap CC1101 wiring (the authoritative pinout)
 
-| M5 Cap pad | Heltec pin | Function |
+| M5 Cap pad (printed) | Heltec pin | Function |
 |---|---|---|
 | `5V OUT` | 5V (J2-2) | Supply into the Cap's regulator |
 | `GND` | GND (J2-1) | Ground |
-| `SCK` | **GPIO33** | SPI clock |
-| `MOSI` | **GPIO47** | SPI MOSI |
-| `MISO` | **GPIO48** | SPI MISO |
-| `CC CS` | **GPIO39** | **CC1101 chip-select** (see note) |
+| `SCK` | **GPIO33** | SPI clock (shared: CC1101 + NFC) |
+| `MOSI` | **GPIO47** | SPI MOSI (shared) |
+| `MISO` | **GPIO48** | SPI MISO (shared) |
+| `NFC CS` | **GPIO39** | **CC1101** chip-select (labels swapped — see note) |
+| `CC CS` | **GPIO6** | **ST25R3916 NFC** chip-select (labels swapped — see note) |
 | `GDO0` | **GPIO4** | CC1101 GDO0 |
 | `RF SW0` | **GPIO38** | Antenna-switch control line 0 |
+| `NFC IRQ` | **GPIO44** | ST25R3916 interrupt (required for NFC reads) |
 
-- **CC1101 CS is GPIO39.** The Cap's silkscreen swaps the `CC CS`/`NFC CS` labels vs the schematic; GPIO39 is the real CC1101 select (verified by reading VERSION=0x14).
+- **The Cap's silkscreen swaps the `CC CS`/`NFC CS` labels** vs the schematic. So the pad printed `NFC CS` is the real **CC1101** select (GPIO39, verified by reading VERSION=0x14), and the pad printed `CC CS` is the real **NFC/ST25R3916** select (GPIO6). Both chips sit on the one shared SPI bus; each has its own CS.
+- **`NFC IRQ` → GPIO44** is the one wire beyond the original Sub-GHz harness. GPIO44 (U0RXD) is deliberately chosen: it's non-strapping, off the flash bus, **input-natured**, and left unassigned by the Meshtastic/Meshcore V4 variants — so the ST25R3916's push-pull IRQ never contends when you re-flash this board with mesh firmware. (GPIO34 looks free but is `VGNSS_Ctrl`/`PIN_GPS_EN`, driven as an output — do not use it.)
 - **`RF SW1` is not wired** — it's the CC1101's own GDO2, forced in firmware via `IOCFG2` (mainline 1.17 already has this code).
 - **OLED (onboard):** I²C `SDA=GPIO17`, `SCL=GPIO18`, `RST=GPIO21`, panel power via **`Vext=GPIO36` (active LOW)** — Vext is enabled in `interface.cpp` before the display inits.
 - **Disabled to avoid pin conflicts:** GPS (would claim 38/39) and Grove I²C (SCL=4). GPS and the Cap can't coexist on this wiring; the Cap wins.
@@ -106,6 +109,7 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 
 - **On-device (single PRG button):** tap = next, hold ≈0.65 s = select/enter, double-tap = back. Main menu is a 4×2 icon grid; enter for lists.
 - **Serial CLI** (USB): `help`, `rf rx -frequency <MHz>`, `rf scan <startHz> <stopHz>`, `stopscan`.
+- **NFC/RFID (the Cap's ST25R3916, 13.56 MHz):** first time only, select the reader: **RFID → Config → RFID Module → "CC1101 M5 Cap"** (sets ST25R3916-SPI + pins and persists it). Then **RFID → Read tag** and hold a tag flat on the Cap's NFC antenna. Reads NFC Type-A (NTAG, MIFARE, contactless cards, phones); secured ISO-14443-4 cards show their UID with a "data blocks incomplete" note.
 - **Phone over Bluetooth:** mainline ships the BLE companion API; this board **auto-starts it on boot** (advertises as **"Bruce"**, no manual toggle needed). Connect with **Bruce Remote for iOS** (sideloaded from BruceDevices/App-IOS) or any Nordic-UART BLE client (nRF Connect). BLE (not WiFi) means it survives WiFi attacks. The app's **Remote Control** screen mirror and d-pad both work (full menu + selection cursor stream; d-pad navigates).
 
 ---
@@ -114,7 +118,8 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 
 - **Apply the DisplayDrivers patch** or everything speckles. (`TFT_MONOCHROME` not honored by mainline's backend.)
 - **`-DROTATION=0`** for this board. mainline's DisplayDrivers backend applies rotation 180° off from BruceButBetter's — BBB used `ROTATION=2`; here that's upside-down, so we use `0`.
-- **CC1101 CS = GPIO39** (silkscreen labels swapped).
+- **CC1101 CS = GPIO39, NFC (ST25R3916) CS = GPIO6** — the Cap silkscreen swaps the `CC CS`/`NFC CS` labels, so the pad printed `NFC CS` is really CC1101 and `CC CS` is really NFC. Both share the SPI bus; `NFC IRQ` is the extra wire on **GPIO44** (input-natured U0RXD, safe across mesh firmwares; **not** GPIO34 = GPS power).
+- **USB-CDC serial is non-blocking** (`Serial.setTxTimeoutMs(0)` in `main.cpp`). Without it, a host that opens the port but stops reading backs up the TX FIFO and stalls the main loop — which also drives BLE, so the Remote mirror freezes until the port drains.
 - **`lib_ignore = FastLED`** — on ESP32-S3 LTO builds FastLED triggers a `windowed longcall crosses 1GB boundary` link error; the Heltec has no RGB LED so it's unused anyway.
 - **`lib_ignore = TFT_eSPI`** — LovyanGFX replaces it for the OLED.
 - **`NO_LR_BUTTONS`**: the main icon grid navigates on UP/DOWN, so the single-button "advance" emits `DownPress`. The compact grid also accepts `Next`/`Prev` (mapped to DOWN/UP) so the Bruce Remote app — which drives everything with Next/Prev — can navigate and trigger the repaint that bootstraps the screen mirror.
@@ -131,6 +136,7 @@ Flash/RAM as of this writing: **Flash 24.6%** (~4.12 MB), **RAM 39.2%**.
 - **Some popup/message boxes** may render tall on 64 px (functional, not polished).
 - **Frame batching** uses the restored `startWrite/endWrite` (via the patch).
 - **Mirror re-streams the full frame each repaint** — the dedup log is effectively off for the grid (`drawIconGrid` fillRect-clears the body each frame), so every repaint re-sends ~61 ops. Harmless with the 128-deep queue; could be optimized to stream only changed cells.
+- **NFC polls Type-A only** (`_pollForTag` uses `RFAL_NFC_POLL_TECH_A`) — NFC-V/ISO15693, FeliCa, and NFC-B tags aren't detected. ISO-14443-4 cards read UID only (pages aren't dumpable). On 64 px the `ATQA`/`SAK` lines below the UID are cut off (cosmetic). `ST25R_DEBUG` in `ST25R3916.cpp` gives verbose chip/poll logs.
 - Not yet exercised: **live RX decode of a real transmitter / TX / RSSI scan** (detection + per-band antenna switching are confirmed).
 
 ---
