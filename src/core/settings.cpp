@@ -1891,6 +1891,15 @@ void enableBLEAPI() {
     }
 }
 
+// Boot-time BLE API start: brings the stack up without the blocking displayInfo()
+// that the interactive toggle shows. Safe to call from a board's _late_setup_gpio()
+// so the companion API is available on boot without a manual menu toggle.
+void startBLEAPIOnBoot() {
+    if (ble_api_enabled) return;
+    bleApi.setup();
+    ble_api_enabled = true;
+}
+
 bool appStoreInstalled() {
     FS *fs;
     if (!getFsStorage(fs)) {

@@ -125,6 +125,7 @@ void setMacAddressMenu();
 
 #if !defined(LITE_VERSION)
 void enableBLEAPI();
+void startBLEAPIOnBoot();
 
 bool appStoreInstalled();
 

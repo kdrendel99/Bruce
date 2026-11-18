@@ -1,4 +1,5 @@
 #include "core/powerSave.h"
+#include "core/settings.h" // enableBLEAPI()
 #include "ok_button.h"
 #include <Wire.h>
 #include <interface.h>
@@ -55,3 +56,11 @@ void InputHandler(void) {
         default: break;
     }
 }
+
+/*********************************************************************
+** _late_setup_gpio() - runs after display + input task are up.
+** Auto-start the BLE companion API on boot. The core's enable flag is
+** RAM-only (resets every power-cycle), so without this you'd have to
+** toggle Config > ... > BLE API by hand after every reboot.
+*********************************************************************/
+void _late_setup_gpio() { startBLEAPIOnBoot(); }
