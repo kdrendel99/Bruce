@@ -226,11 +226,18 @@ void TagOMatic::display_banner() {
     }
 
     tft.setTextSize(FP);
+#if defined(UI_COMPACT) && UI_COMPACT
+    // On 128x64 the banner already fills the screen; the "Press [OK]" hint would push
+    // the read result (UID/type from dump_card_details) off the bottom edge. Drop the
+    // hint here so the actual tag data is visible. [OK] still changes mode.
+    padprintln("");
+#else
     padprintln("");
     tft.setTextColor(getColorVariation(bruceConfig.priColor), bruceConfig.bgColor);
     padprintln("Press [OK] to change mode.");
     tft.setTextColor(bruceConfig.priColor, bruceConfig.bgColor);
     padprintln("");
+#endif
 }
 
 void TagOMatic::dump_card_details() {

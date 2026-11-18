@@ -35,6 +35,17 @@ void _setup_gpio() {
     bruceConfigPins.CC1101_bus.mosi = (gpio_num_t)CC1101_MOSI_PIN;
     bruceConfigPins.CC1101_bus.cs = (gpio_num_t)CC1101_SS_PIN;
     bruceConfigPins.CC1101_bus.io0 = (gpio_num_t)CC1101_GDO0_PIN;
+
+    // M5 Cap's second chip: ST25R3916 NFC on the SAME SPI bus as the CC1101 above
+    // (shared SCK/MOSI/MISO), with its own chip-select (CAP_NFC_SS_PIN) and a
+    // dedicated interrupt line (CAP_NFC_IRQ_PIN, io0). Default to it so RFID > Read
+    // tag works out of the box; /brucePins.conf still overrides if the user remaps.
+    bruceConfigPins.rfidModule = ST25R3916_SPI_MODULE;
+    bruceConfigPins.ST25R_bus.sck = (gpio_num_t)CC1101_SCK_PIN;
+    bruceConfigPins.ST25R_bus.miso = (gpio_num_t)CC1101_MISO_PIN;
+    bruceConfigPins.ST25R_bus.mosi = (gpio_num_t)CC1101_MOSI_PIN;
+    bruceConfigPins.ST25R_bus.cs = (gpio_num_t)CAP_NFC_SS_PIN;
+    bruceConfigPins.ST25R_bus.io0 = (gpio_num_t)CAP_NFC_IRQ_PIN;
 }
 
 /*********************************************************************
