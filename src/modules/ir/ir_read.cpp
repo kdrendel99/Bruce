@@ -209,6 +209,11 @@ void IrRead::cls() {
 
 void IrRead::display_banner() {
     cls();
+#if UI_COMPACT
+    // 128x64: one compact header so the captured signal + button prompts fit on-screen.
+    tft.setTextSize(FP);
+    padprintln("IR Read   saved:" + String(signals_read));
+#else
     tft.setTextSize(FM);
     padprintln("IR Read");
 
@@ -216,9 +221,25 @@ void IrRead::display_banner() {
     padprintln("--------------");
     padprintln("Signals captured: " + String(signals_read));
     tft.println("");
+#endif
 }
 
 void IrRead::display_btn_options() {
+#if UI_COMPACT
+    // Terse prompts that fit 128x64 (the verbose ones overflow off the bottom).
+    // On the encoder: OK = short press, Next/Prev = turning the knob either way.
+    if (_emulate_mode) {
+        padprintln("OK:resend  Next:new");
+        padprintln("Prev:save  ESC:exit");
+    } else if (_read_signal) {
+        padprintln("OK:emulate  Next:save");
+        padprintln("Prev:discard ESC:exit");
+    } else {
+        if (quickloop) padprintln("Next:skip button");
+        if (signals_read > 0) padprintln("OK:save device");
+        padprintln("ESC:exit");
+    }
+#else
     tft.println("");
     tft.println("");
     if (_emulate_mode) {
@@ -234,6 +255,7 @@ void IrRead::display_btn_options() {
         if (signals_read > 0) { padprintln("Press [OK]   to save device"); }
     }
     padprintln("Press [ESC]  to exit");
+#endif
 }
 
 void IrRead::read_signal() {
