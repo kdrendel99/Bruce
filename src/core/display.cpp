@@ -899,7 +899,17 @@ int loopOptions(
         // Main menu icon grid: LEFT/RIGHT step through the cells in reading order,
         // UP/DOWN change row and turn the page at the top/bottom edge.
         const bool gridNavigation = menuType == MENU_TYPE_MAIN;
-        if (gridNavigation) {
+        // On an encoder board one detent sets BOTH Next/Prev AND the rotary-step
+        // accumulator (RotaryNetSteps); the HAS_ENCODER block below already moves the
+        // grid from the accumulator. Skip this press-based grid move when steps are
+        // pending, or a single click advances two cells. Press-only nav (BLE remote,
+        // buttons) leaves RotaryNetSteps at 0, so it still runs here. Lists never hit
+        // this block (it's MENU_TYPE_MAIN only), which is why only the grid doubled.
+        bool gridPressNav = gridNavigation;
+#ifdef HAS_ENCODER
+        if (RotaryNetSteps != 0) gridPressNav = false;
+#endif
+        if (gridPressNav) {
             int dx = 0;
             int dy = 0;
 #if defined(NO_LR_BUTTONS)
